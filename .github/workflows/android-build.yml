@@ -22,12 +22,12 @@ jobs:
           distribution: 'temurin'
           cache: 'gradle'
 
-      # PERBAIKAN: Menambahkan langkah untuk menginstal Android Command Line Tools
-      # yang diperlukan oleh make.sh dan Gradle
+      # Langkah ini MENGATASI [!] Android Command Line Tools not found
+      # dengan menetapkan ANDROID_HOME dan menginstal alat yang diperlukan.
       - name: Set up Android SDK
         uses: android-actions/setup-android@v2
         with:
-          api-level: '34' # Sesuaikan dengan target API level proyek Anda
+          api-level: '34' 
           cmdline-tools: true 
 
       - name: Grant execute permission for gradlew and make.sh
@@ -35,11 +35,10 @@ jobs:
           chmod +x gradlew
           chmod +x make.sh
 
+      # Eksekusi build sekarang akan menggunakan ANDROID_HOME yang disiapkan oleh action di atas.
       - name: Build Debug APK via make.sh
-        # Menggunakan "debug" adalah panggilan yang paling mendekati "build"
         run: ./make.sh debug 
 
-      # PERBAIKAN: Indentasi yang benar untuk upload-artifact
       - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
         with:
