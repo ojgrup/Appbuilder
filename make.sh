@@ -33,7 +33,6 @@ try() {
     local log_file=$(mktemp)
     
     if [ $# -eq 1 ]; then
-        # Jika передан satu argumen - gunakan eval untuk perintah yang kompleks
         if ! eval "$1" &> "$log_file"; then
             echo -e "${RED}[!]${NC} Failed: $1" >&2
             cat "$log_file" >&2
@@ -41,7 +40,6 @@ try() {
             exit 1
         fi
     else
-        # Jika beberapa argumen - jalankan langsung
         if ! "$@" &> "$log_file"; then
             echo -e "${RED}[!]${NC} Failed: $*" >&2
             cat "$log_file" >&2
@@ -60,16 +58,13 @@ set_var() {
     local pattern="$@"
     [ -z "$pattern" ] && error "Empty pattern. Usage: set_var \"varName = value\""
     
-    # Извлекаем nama variabel dan nilai baru
     local var_name="${pattern%% =*}"
     local new_value="${pattern#*= }"
 
-    # Periksa keberadaan variabel
     if ! grep -q "$var_name *= *.*;" "$java_file"; then
         error "Variable '$var_name' not found in MainActivity.java"
     fi
 
-    # Tambahkan tanda kutip jika nilai bukan true/false
     local val_to_set
     if [[ ! "$new_value" =~ ^(true|false)$ ]]; then
         val_to_set="\"$new_value\""
@@ -79,16 +74,12 @@ set_var() {
     
     local tmp_file=$(mktemp)
     
-    # AWK script DIBUNGKUS dalam tanda kutip tunggal
     awk -v var="$var_name" -v val="$val_to_set" '
     {
         if (!found && $0 ~ var " *= *.*;" ) {
-            # Simpan awal baris hingga =
             match($0, "^.*" var " *=")
             before = substr($0, RSTART, RLENGTH)
-            # Ganti nilai
             print before " " val ";"
-            # Lakukan penggantian hanya untuk yang pertama ditemukan
             found = 1
         } else {
             print $0
@@ -98,7 +89,6 @@ set_var() {
     if ! diff -q "$java_file" "$tmp_file" >/dev/null; then
         mv "$tmp_file" "$java_file"
         log "Updated $var_name to $val_to_set"
-        # Penanganan khusus untuk geolocationEnabled
         if [ "$var_name" = "geolocationEnabled" ]; then
             update_geolocation_permission ${new_value//\"/}
         fi
@@ -107,7 +97,6 @@ set_var() {
     fi
 }
 
-# (Fungsi-fungsi lain: merge_config_with_default, apply_config, apk, test, keygen, clean, chid, rename, set_deep_link, set_network_security_config, set_icon, set_userscripts, update_geolocation_permission tidak diubah karena sudah benar atau hanya berfokus pada logika aplikasi/konfigurasi)
 merge_config_with_default() {
     local default_conf="app/default.conf"
     local user_conf="$1"
@@ -477,7 +466,7 @@ set_userscripts() {
                 is_current=true
                 break
             fi
-        done
+        end
         if ! $is_current; then
             rm -f "$scripts_dir/$script"
             removed+=("$script")
@@ -541,47 +530,6 @@ update_geolocation_permission() {
 }
 
 
-get_tools() {
-    # HANYA JALANKAN SECARA LOKAL
-    if [ -n "${CI:-}" ]; then
-        warn "Skipping get_tools in CI environment."
-        return 0
-    fi
-
-    info "Downloading Android Command Line Tools..."
-    
-    case "$(uname -s)" in
-        Linux*)      os_type="linux";;
-        # Darwin*)     os_type="mac";;
-        *)           error "Unsupported OS";;
-    esac
-    
-    tmp_dir=$(mktemp -d)
-    cd "$tmp_dir"
-    
-    try "wget -q --show-progress 'https://dl.google.com/android/repository/commandlinetools-${os_type}-11076708_latest.zip' -O cmdline-tools.zip"
-    
-    info "Extracting tools..."
-    try "unzip -q cmdline-tools.zip"
-    try "mkdir -p '$ANDROID_HOME/cmdline-tools/latest'"
-    try "mv cmdline-tools/* '$ANDROID_HOME/cmdline-tools/latest/'"
-    
-    cd "$OLDPWD"
-    rm -rf "$tmp_dir"
-
-    info "Accepting licenses..."
-    try "yes | '$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager' --sdk_root=$ANDROID_HOME --licenses"
-    
-    info "Installing necessary SDK components..."
-    try "'$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager' --sdk_root=$ANDROID_HOME \
-        'platform-tools' \
-        'platforms;android-33' \
-        'build-tools;33.0.2'" 
-
-    log "Android SDK successfully installed!"
-}
-
-
 regradle() {
     info "Reinstalling Gradle..."
     try rm -rf gradle gradlew .gradle .gradle-cache
@@ -603,13 +551,47 @@ EOL
 }
 
 
-get_java() {
-    # HANYA JALANKAN SECARA LOKAL
-    if [ -n "${CI:-}" ]; then
-        warn "Skipping get_java in CI environment."
+# Check Java version and update JAVA_HOME if needed
+check_and_find_java() {
+    # First check existing JAVA_HOME (important for CI)
+    if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then
+        version=$("$JAVA_HOME/bin/java" -version 2>&1 | head -n 1 | cut -d'"' -f2 | cut -d'.' -f1)
+        if [ "$version" = "17" ]; then
+            info "Using system JAVA_HOME: $JAVA_HOME"
+            export PATH="$JAVA_HOME/bin:$PATH"
+            return 0
+        else
+            warn "Current JAVA_HOME points to wrong version: $version"
+        fi
+    fi
+
+    # Then check local installation (only for local build)
+    if [ -z "${CI:-}" ] && [ -d "$PWD/jvm/jdk-17.0.2" ]; then
+        info "Using local Java installation"
+        export JAVA_HOME="$PWD/jvm/jdk-17.0.2"
+        export PATH="$JAVA_HOME/bin:$PATH"
         return 0
     fi
 
+    # Finally check /usr/lib/jvm
+    if [ -d "/usr/lib/jvm" ]; then
+        while IFS= read -r java_path; do
+            if [ -x "$java_path/bin/java" ]; then
+                version=$("$java_path/bin/java" -version 2>&1 | head -n 1 | cut -d'"' -f2 | cut -d'.' -f1)
+                if [ "$version" = "17" ]; then
+                    info "Found system Java 17: $java_path"
+                    export JAVA_HOME="$java_path"
+                    export PATH="$JAVA_HOME/bin:$PATH"
+                    return 0
+                fi
+            fi
+        done < <(find /usr/lib/jvm -maxdepth 1 -type d)
+    fi
+
+    return 1
+}
+
+download_java() {
     local install_dir="$PWD/jvm"
     local jdk_version="17.0.2"
     local jdk_hash="0022753d0cceecacdd3a795dd4cea2bd7ffdf9dc06e22ffd1be98411742fbb44"
@@ -634,4 +616,109 @@ get_java() {
     info "Unpacking to ${install_dir}..."
     try "mkdir -p '$install_dir'"
     try "tar xf openjdk.tar.gz"
-    try "mv jdk-${jdk_version} '$
+    try "mv jdk-${jdk_version} '$install_dir/'"
+    
+    cd "$OLDPWD"
+    rm -rf "$tmp_dir"
+
+    export JAVA_HOME="$install_dir/jdk-${jdk_version}"
+    export PATH="$JAVA_HOME/bin:$PATH"
+    
+    log "OpenJDK ${jdk_version} downloaded successfully!"
+}
+
+
+build() {
+    apply_config $@
+    apk
+}
+
+debug() {
+    apply_config $@
+    info "Building debug APK..."
+    try "./gradlew assembleDebug --no-daemon --quiet"
+    if [ -f "app/build/outputs/apk/debug/app-debug.apk" ]; then
+        log "Debug APK successfully built"
+    else
+        error "Debug build failed"
+    fi
+}
+
+###############################################################################
+
+ORIGINAL_PWD="$PWD"
+
+# Change directory to the directory where make.sh resides (project root)
+try cd "$(dirname "$0")"
+
+# PERBAIKAN KRITIS UNTUK CI: JANGAN TIMPA ANDROID_HOME JIKA SUDAH DISIAPKAN OLEH CI
+# Gunakan ANDROID_HOME $PWD/cmdline-tools HANYA jika TIDAK didefinisikan DAN BUKAN di CI
+if [ -z "${ANDROID_HOME:-}" ] && [ -z "${CI:-}" ]; then
+    export ANDROID_HOME=$PWD/cmdline-tools/
+fi
+
+appname=$(grep -Po '(?<=applicationId "com\.)[^.]*' app/build.gradle)
+
+# Set Gradle's cache directory to be local to the project
+export GRADLE_USER_HOME=$PWD/.gradle-cache
+
+command -v wget >/dev/null 2>&1 || error "wget not found. Please install wget"
+
+# Java Check and Install (di CI, ini akan dilewati karena JAVA_HOME sudah diset)
+if ! check_and_find_java; then
+    # Jika TIDAK di CI, tanyakan apakah akan mengunduh Java
+    if [ -z "${CI:-}" ]; then
+        warn "Java 17 not found"
+        read -p "Would you like to download OpenJDK 17 to ./jvm? (y/N) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            download_java
+            if ! command -v java >/dev/null 2>&1; then
+                error "Java installation failed"
+            fi
+        else
+            error "Java 17 is required"
+        fi
+    else
+        # Jika di CI, tapi check_and_find_java gagal (mustahil jika action setup-java berhasil)
+        error "Java 17 is required but not found in CI environment."
+    fi
+fi
+
+# Final verification Java
+java_version=$(java -version 2>&1 | head -n 1 | cut -d'"' -f2 | cut -d'.' -f1)
+if [ "$java_version" != "17" ]; then
+    error "Wrong Java version: $java_version. Java 17 is required"
+fi
+
+command -v adb >/dev/null 2>&1 || warn "adb not found. './make.sh try' will not work"
+
+# Android Tools Check (di CI, ini akan dilewati karena ANDROID_HOME sudah diset oleh action)
+# Cek apakah ANDROID_HOME diset ke lokasi lokal *atau* diset sama sekali.
+if [ -z "${CI:-}" ] && [ ! -d "$ANDROID_HOME/cmdline-tools/latest" ]; then
+    # Jika ANDROID_HOME bukan $PWD/cmdline-tools, cek saja apakah sdkmanager ada di PATH
+    if ! command -v sdkmanager >/dev/null 2>&1; then
+        warn "Android Command Line Tools not found. Please set ANDROID_HOME or install locally."
+        # JANGAN lakukan instalasi otomatis karena fungsi get_tools sudah dihapus.
+        error "Cannot continue without Android Command Line Tools"
+    fi
+fi
+
+
+if [ $# -eq 0 ]; then
+    echo -e "${BOLD}Usage:${NC}"
+    echo -e "  ${BLUE}$0 keygen${NC}        - Generate signing key"
+    echo -e "  ${BLUE}$0 build${NC} [config]  - Apply configuration and build Release APK"
+    echo -e "  ${BLUE}$0 debug${NC} [config]  - Apply configuration and build Debug APK"
+    echo -e "  ${BLUE}$0 test${NC}          - Install and test APK via adb, show logs"
+    echo -e "  ${BLUE}$0 clean${NC}         - Clean build files, reset settings"
+    echo 
+    echo -e "  ${BLUE}$0 apk${NC}           - Build Release APK without apply_config"
+    echo -e "  ${BLUE}$0 apply_config${NC}  - Apply settings from config file"
+	echo -e "  ${BLUE}$0 download_java${NC} - Download OpenJDK 17 locally"
+    echo -e "  ${BLUE}$0 regradle${NC}      - Reinstall gradle."
+    exit 1
+fi
+
+# Jalankan perintah yang diberikan
+eval "$@"
