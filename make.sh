@@ -38,7 +38,7 @@ try() {
 
 
 set_var() {
-    # PERBAIKAN UTAMA: Skrip AWK dibungkus dengan benar dalam tanda kutip tunggal.
+    # PERBAIKAN: Seluruh skrip AWK (baris 50-65) DIBUNGKUS dalam tanda kutip tunggal ('...')
     local var_name var_value
     # Parse the input string like "key = value"
     if ! [[ "$1" =~ ^([a-zA-Z0-9_]+)[[:space:]]*=[[:space:]]*(.*) ]]; then
@@ -52,7 +52,7 @@ set_var() {
     local java_file="app/src/main/java/com/$appname/webtoapk/MainActivity.java"
     local tmp_file=$(mktemp)
 
-    # AWK script is now correctly enclosed in single quotes ('...')
+    # AWK script is correctly enclosed in single quotes
     awk -v var="$var" -v val="$val" '
     {
         if (!found && $0 ~ var " *= *.*;" ) {
@@ -104,8 +104,6 @@ merge_config_with_default() {
     done < <(grep -vE '^[[:space:]]*(#|$)' "$default_conf")
 
     # Now combine default lines (if any) with the user configuration.
-    # The defaults will be added on top, but since they are defined earlier they
-    # can be overridden by any subsequent assignment (если вдруг порядок имеет значение).
     cat "$temp_defaults" "$user_conf" > "$merged_conf"
 
     rm -f "$temp_defaults"
@@ -156,6 +154,7 @@ apply_config() {
                 set_userscripts $value
                 ;;
             *)
+                # Pass assignment to set_var function
                 set_var "$key = $value"
                 ;;
         esac
@@ -196,12 +195,6 @@ test() {
     echo "=========================="
     adb logcat | grep -oP "(?<=WebToApk: ).*"
 
-    # adb logcat *:I | grep com.$appname.webtoapk
-
-	# https://stackoverflow.com/questions/29072501/how-to-unlock-android-phone-through-adb
-	# adb shell input keyevent 26 #Pressing the lock button
-	# sleep 1s
-	# adb shell input touchscreen swipe 930 880 930 380 #Swipe UP
 }
 
 keygen() {
@@ -510,7 +503,7 @@ set_userscripts() {
                 is_current=true
                 break
             fi
-        end
+        done
         # If a script existed before but is not in the new list, remove it
         if ! $is_current; then
             rm -f "$scripts_dir/$script"
@@ -718,6 +711,17 @@ build() {
     apk
 }
 
+debug() {
+    apply_config $@
+    info "Building debug APK..."
+    try "./gradlew assembleDebug --no-daemon --quiet"
+    if [ -f "app/build/outputs/apk/debug/app-debug.apk" ]; then
+        log "Debug APK successfully built"
+    else
+        error "Debug build failed"
+    fi
+}
+
 ###############################################################################
 
 ORIGINAL_PWD="$PWD"
@@ -731,6 +735,7 @@ appname=$(grep -Po '(?<=applicationId "com\.)[^.]*' app/build.gradle)
 # Set Gradle's cache directory to be local to the project
 export GRADLE_USER_HOME=$PWD/.gradle-cache
 
+# Check dependencies
 command -v wget >/dev/null 2>&1 || error "wget not found. Please install wget"
 
 # Try to find Java 17
@@ -756,7 +761,8 @@ fi
 
 command -v adb >/dev/null 2>&1 || warn "adb not found. './make.sh try' will not work"
 
-if [ ! -d "$ANDROID_HOME" ]; then
+# Skip local tool download check if running in CI/GitHub Actions, as the workflow handles it.
+if [ -z "${CI}" ] && [ ! -d "$ANDROID_HOME" ]; then
     warn "Android Command Line Tools not found: ./cmdline-tools"
     read -p "Do you want to download them now? (y/n) " -n 1 -r
     echo
@@ -770,11 +776,12 @@ fi
 if [ $# -eq 0 ]; then
     echo -e "${BOLD}Usage:${NC}"
     echo -e "  ${BLUE}$0 keygen${NC}        - Generate signing key"
-    echo -e "  ${BLUE}$0 build${NC} [config]  - Apply configuration and build"
+    echo -e "  ${BLUE}$0 build${NC} [config]  - Apply configuration and build Release APK"
+    echo -e "  ${BLUE}$0 debug${NC} [config]  - Apply configuration and build Debug APK"
     echo -e "  ${BLUE}$0 test${NC}          - Install and test APK via adb, show logs"
     echo -e "  ${BLUE}$0 clean${NC}         - Clean build files, reset settings"
     echo 
-    echo -e "  ${BLUE}$0 apk${NC}           - Build APK without apply_config"
+    echo -e "  ${BLUE}$0 apk${NC}           - Build Release APK without apply_config"
     echo -e "  ${BLUE}$0 apply_config${NC}  - Apply settings from config file"
 	echo -e "  ${BLUE}$0 get_java${NC}      - Download OpenJDK 17 locally"
     echo -e "  ${BLUE}$0 regradle${NC}      - Reinstall gradle. You don't need it"
