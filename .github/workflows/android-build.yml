@@ -22,14 +22,18 @@ jobs:
         distribution: 'temurin'
         cache: gradle
 
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew
+    - name: Grant execute permission for gradlew and make.sh
+      run: |
+        chmod +x gradlew
+        chmod +x make.sh
 
     - name: Build Debug APK via make.sh
-  run: ./make.sh debug
+      # Perintah ini akan menggunakan make.sh yang membaca webapk.conf
+      run: ./make.sh debug
 
     - name: Upload Debug APK Artifact
       uses: actions/upload-artifact@v4
       with:
         name: app-debug-apk
+        # Path output standar setelah menjalankan make.sh debug
         path: app/build/outputs/apk/debug/app-debug.apk
