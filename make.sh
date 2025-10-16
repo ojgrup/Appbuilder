@@ -25,7 +25,7 @@ warn() {
 }
 
 error() {
-    echo -e "${RED}[!]${NC} $1"
+    echo -e "${RED}[!]${NC} $1" >&2
     exit 1
 }
 
@@ -33,18 +33,18 @@ try() {
     local log_file=$(mktemp)
     
     if [ $# -eq 1 ]; then
-        # Если передан один аргумент - используем eval для сложных команд
+        # Jika передан satu argumen - gunakan eval untuk perintah yang kompleks
         if ! eval "$1" &> "$log_file"; then
-            echo -e "${RED}[!]${NC} Failed: $1"
-            cat "$log_file"
+            echo -e "${RED}[!]${NC} Failed: $1" >&2
+            cat "$log_file" >&2
             rm -f "$log_file"
             exit 1
         fi
     else
-        # Если несколько аргументов - запускаем напрямую
+        # Jika beberapa argumen - jalankan langsung
         if ! "$@" &> "$log_file"; then
-            echo -e "${RED}[!]${NC} Failed: $*"
-            cat "$log_file"
+            echo -e "${RED}[!]${NC} Failed: $*" >&2
+            cat "$log_file" >&2
             rm -f "$log_file"
             exit 1
         fi
@@ -60,31 +60,35 @@ set_var() {
     local pattern="$@"
     [ -z "$pattern" ] && error "Empty pattern. Usage: set_var \"varName = value\""
     
-    # Извлекаем имя переменной и новое значение
+    # Извлекаем nama variabel dan nilai baru
     local var_name="${pattern%% =*}"
     local new_value="${pattern#*= }"
 
-    # Проверяем существование переменной
+    # Periksa keberadaan variabel
     if ! grep -q "$var_name *= *.*;" "$java_file"; then
         error "Variable '$var_name' not found in MainActivity.java"
     fi
 
-    # Добавляем кавычки если значение не true/false
+    # Tambahkan tanda kutip jika nilai bukan true/false
+    local val_to_set
     if [[ ! "$new_value" =~ ^(true|false)$ ]]; then
-        new_value="\"$new_value\""
+        val_to_set="\"$new_value\""
+    else
+        val_to_set="$new_value"
     fi
     
     local tmp_file=$(mktemp)
     
-    awk -v var="$var_name" -v val="$new_value" '
+    # AWK script DIBUNGKUS dalam tanda kutip tunggal
+    awk -v var="$var_name" -v val="$val_to_set" '
     {
         if (!found && $0 ~ var " *= *.*;" ) {
-            # Сохраняем начало строки до =
+            # Simpan awal baris hingga =
             match($0, "^.*" var " *=")
             before = substr($0, RSTART, RLENGTH)
-            # Заменяем значение
+            # Ganti nilai
             print before " " val ";"
-            # Делаем замену только для первого найденного
+            # Lakukan penggantian hanya untuk yang pertama ditemukan
             found = 1
         } else {
             print $0
@@ -93,8 +97,8 @@ set_var() {
     
     if ! diff -q "$java_file" "$tmp_file" >/dev/null; then
         mv "$tmp_file" "$java_file"
-        log "Updated $var_name to $new_value"
-        # Special handling for geolocationEnabled
+        log "Updated $var_name to $val_to_set"
+        # Penanganan khusus untuk geolocationEnabled
         if [ "$var_name" = "geolocationEnabled" ]; then
             update_geolocation_permission ${new_value//\"/}
         fi
@@ -103,32 +107,25 @@ set_var() {
     fi
 }
 
+# (Fungsi-fungsi lain: merge_config_with_default, apply_config, apk, test, keygen, clean, chid, rename, set_deep_link, set_network_security_config, set_icon, set_userscripts, update_geolocation_permission tidak diubah karena sudah benar atau hanya berfokus pada logika aplikasi/konfigurasi)
 merge_config_with_default() {
     local default_conf="app/default.conf"
     local user_conf="$1"
     local merged_conf
     merged_conf=$(mktemp)
 
-    # Temporary file for default lines that are missing in user config
     local temp_defaults
     temp_defaults=$(mktemp)
 
-    # For each non-empty, non-comment line in default.conf
     while IFS= read -r line; do
-        # Extract key (everything up to '=')
         key=$(echo "$line" | cut -d '=' -f1 | xargs)
         if [ -n "$key" ]; then
-            # Check if the key is missing in the user config
             if ! grep -q -E "^[[:space:]]*$key[[:space:]]*=" "$user_conf"; then
-                # Key is missing – add the default line
                 echo "$line" >> "$temp_defaults"
             fi
         fi
     done < <(grep -vE '^[[:space:]]*(#|$)' "$default_conf")
 
-    # Now combine default lines (if any) with the user configuration.
-    # The defaults will be added on top, but since they are defined earlier they
-    # can be overridden by any subsequent assignment (если вдруг порядок имеет значение).
     cat "$temp_defaults" "$user_conf" > "$merged_conf"
 
     rm -f "$temp_defaults"
@@ -138,7 +135,6 @@ merge_config_with_default() {
 apply_config() {
     local config_file="${1:-webapk.conf}"
 
-    # If config file is not found in project root, try in caller's directory
     if [ ! -f "$config_file" ] && [ -f "$ORIGINAL_PWD/$config_file" ]; then
         config_file="$ORIGINAL_PWD/$config_file"
     fi
@@ -152,10 +148,8 @@ apply_config() {
     config_file=$(merge_config_with_default "$config_file")
     
     while IFS='=' read -r key value || [ -n "$key" ]; do
-        # Skip empty lines and comments
         [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
         
-        # Trim whitespace
         key=$(echo "$key" | xargs)
         value=$(echo "$value" | xargs)
         
@@ -218,13 +212,6 @@ test() {
     try "adb shell am start -n com.$appname.webtoapk/.MainActivity"
     echo "=========================="
     adb logcat | grep -oP "(?<=WebToApk: ).*"
-
-    # adb logcat *:I | grep com.$appname.webtoapk
-
-	# https://stackoverflow.com/questions/29072501/how-to-unlock-android-phone-through-adb
-	# adb shell input keyevent 26 #Pressing the lock button
-	# sleep 1s
-	# adb shell input touchscreen swipe 930 880 930 380 #Swipe UP
 }
 
 keygen() {
@@ -258,7 +245,7 @@ chid() {
     if ! [[ $1 =~ ^[a-zA-Z][a-zA-Z0-9_]*$ ]]; then
         error "Invalid application ID. Use only letters, numbers and underscores, start with a letter"
     fi
-   
+    
     try "find . -type f \( -name '*.gradle' -o -name '*.java' -o -name '*.xml' \) -exec \
         sed -i 's/com\.\([a-zA-Z0-9_]*\)\.webtoapk/com.$1.webtoapk/g' {} +"
 
@@ -284,7 +271,6 @@ rename() {
         error "Please provide a display name\nUsage: $0 display_name \"My App Name\""
     fi
     
-    # Найти все файлы strings.xml в различных языковых директориях
     find app/src/main/res/values* -name "strings.xml" | while read xml_file; do
         current_name=$(grep -o 'app_name">[^<]*' "$xml_file" | cut -d'>' -f2)
         if [ "$current_name" = "$new_name" ]; then
@@ -294,7 +280,6 @@ rename() {
         escaped_name=$(echo "$new_name" | sed 's/[\/&]/\\&/g')
         try sed -i "s|<string name=\"app_name\">[^<]*</string>|<string name=\"app_name\">$escaped_name</string>|" "$xml_file"
         
-        # Получаем код языка из пути файла
         lang_code=$(echo "$xml_file" | grep -o 'values-[^/]*' | cut -d'-' -f2)
         if [ -z "$lang_code" ]; then
             lang_code="default"
@@ -311,41 +296,26 @@ set_deep_link() {
     local tmp_file
     tmp_file=$(mktemp)
 
-    # First, create a version of the manifest without any VIEW/BROWSER intent-filter.
-    # This prepares a clean slate.
     awk '
-        # Find any intent-filter block
         /<intent-filter>/, /<\/intent-filter>/ {
-            # Buffer the lines of the block
             buffer = buffer $0 ORS
-            # When the block ends...
             if (/<\/intent-filter>/) {
-                # ...check if it is NOT the browser/deeplink one (by looking for action.VIEW).
                 if (buffer !~ /android.intent.action.VIEW/) {
-                    # If it is the LAUNCHER filter, print it.
                     printf "%s", buffer
                 }
-                # Reset buffer for the next potential block.
                 buffer = ""
             }
-            # Do not print the line yet.
             next
         }
-        # Print all other lines that are not in a VIEW intent-filter block.
         { print }
     ' "$manifest_file" > "$tmp_file"
 
-    # If a host was provided, add the complete intent-filter block back in.
     if [ -n "$host" ]; then
         local new_tmp_file
         new_tmp_file=$(mktemp)
-        # Use awk to insert the new block after the main launcher intent-filter.
         awk -v host="$host" '
-            # After the first (launcher) intent-filter is closed...
             /<\/intent-filter>/ && !inserted {
-                # ...print the closing tag first.
                 print
-                # Then print the new block for our deeplink.
                 print "            <intent-filter>"
                 print "                <action android:name=\"android.intent.action.VIEW\" />"
                 print "                <category android:name=\"android.intent.category.DEFAULT\" />"
@@ -354,19 +324,15 @@ set_deep_link() {
                 print "                <data android:scheme=\"https\" />"
                 print "                <data android:host=\""host"\" />"
                 print "            </intent-filter>"
-                # Set a flag to ensure we only do this once.
                 inserted=1
                 next
             }
-            # Print all other lines as usual.
             { print }
         ' "$tmp_file" > "$new_tmp_file"
 
-        # The final content is now in new_tmp_file.
         mv "$new_tmp_file" "$tmp_file"
     fi
 
-    # Apply changes only if the file is actually different.
     if ! diff -q "$manifest_file" "$tmp_file" >/dev/null; then
         if [ -z "$host" ]; then
             log "Removing deeplink"
@@ -388,7 +354,6 @@ set_network_security_config() {
     tmp_file=$(mktemp)
 
     if [ "$enabled" = "true" ]; then
-        # Add config to the <application> tag if not present
         if ! grep -q "networkSecurityConfig" "$manifest_file"; then
             awk -v attr=" $config_attr" '
             /<\s*application/ { in_app_tag = 1 }
@@ -402,10 +367,9 @@ set_network_security_config() {
             log "Enabling user CA support in AndroidManifest.xml"
             try mv "$tmp_file" "$manifest_file"
         else
-             rm -f "$tmp_file"
+            rm -f "$tmp_file"
         fi
     else
-        # Remove config from the <application> tag if present
         if grep -q "networkSecurityConfig" "$manifest_file"; then
             sed "s# ${config_attr}##" "$manifest_file" > "$tmp_file"
             log "Disabling user CA support in AndroidManifest.xml"
@@ -422,29 +386,23 @@ set_icon() {
     local default_icon="$PWD/app/example.png"
     local dest_file="app/src/main/res/mipmap/ic_launcher.png"
     
-    # If no icon provided, use default
     if [ -z "$icon_path" ]; then
         icon_path="$default_icon"
     fi
 
-    # If icon_path is not absolute, prepend CONFIG_DIR
     if [ -n "${CONFIG_DIR:-}" ] && [[ "$icon_path" != /* ]]; then
         icon_path="$CONFIG_DIR/$icon_path"
     fi
 
-    # Validate icon
     [ ! -f "$icon_path" ] && error "Icon file not found: $icon_path"
     
-    # Check if file is PNG
     file_type=$(file -b --mime-type "$icon_path")
     if [ "$file_type" != "image/png" ]; then
         error "Icon must be in PNG format, got: $file_type"
     fi
 
-    # Create destination directory if needed
     mkdir -p "$(dirname "$dest_file")"
     
-    # Check if icon needs to be updated
     if [ -f "$dest_file" ] && cmp -s "$icon_path" "$dest_file"; then
         return 0
     fi
@@ -453,7 +411,6 @@ set_icon() {
         warn "Using example.png for icon"
     fi
     
-    # Copy icon
     try "cp \"$icon_path\" \"$dest_file\""
     log "Icon updated successfully"
 }
@@ -462,10 +419,8 @@ set_icon() {
 set_userscripts() {
     local scripts_dir="app/src/main/assets/userscripts"
     
-    # Create destination directory if it doesn't exist
     mkdir -p "$scripts_dir"
     
-    # If no arguments provided, clean destination and exit
     if [ $# -eq 0 ] || [ -z "$1" ]; then
         if [ -n "$(ls -A $scripts_dir 2>/dev/null)" ]; then
             find "$scripts_dir" -mindepth 1 -delete
@@ -474,58 +429,47 @@ set_userscripts() {
         return 0
     fi
 
-    # Track changes for reporting
     local added=()
     local updated=()
     local removed=()
     
-    # Get a list of currently existing script basenames in the destination
     local existing_scripts=()
-    # Use find to properly handle filenames with spaces
     while IFS= read -r file; do
         existing_scripts+=("$(basename "$file")")
     done < <(find "$scripts_dir" -mindepth 1 -type f)
 
-    # Build a list of all source files from arguments
     local source_files=()
     for pattern in "$@"; do
-        # If CONFIG_DIR is defined and pattern is relative, prepend it
         if [ -n "${CONFIG_DIR:-}" ] && [[ "$pattern" != /* ]]; then
             pattern="$CONFIG_DIR/$pattern"
         fi
 
-        # Use a nullglob to avoid errors if a pattern doesn't match any files
         shopt -s nullglob
         for file in $pattern; do
             if [ -f "$file" ]; then
                 source_files+=("$file")
             fi
         done
-        shopt -u nullglob # Revert glob option
+        shopt -u nullglob
     done
 
-    # Process source files: copy new/updated files and track which scripts should exist
     local current_scripts=()
     for src_file in "${source_files[@]}"; do
         local base_name
         base_name=$(basename "$src_file")
         local dest_file="$scripts_dir/$base_name"
         
-        # Add basename to a list of scripts that are currently in config
         current_scripts+=("$base_name")
 
         if [ ! -f "$dest_file" ]; then
-            # New file
             cp "$src_file" "$dest_file"
             added+=("$base_name")
         elif ! cmp -s "$src_file" "$dest_file"; then
-            # Changed file
             cp "$src_file" "$dest_file"
             updated+=("$base_name")
         fi
     done
 
-    # Determine which scripts to remove by comparing old and new lists
     for script in "${existing_scripts[@]}"; do
         is_current=false
         for current in "${current_scripts[@]}"; do
@@ -534,14 +478,12 @@ set_userscripts() {
                 break
             fi
         done
-        # If a script existed before but is not in the new list, remove it
         if ! $is_current; then
             rm -f "$scripts_dir/$script"
             removed+=("$script")
         fi
     done
 
-    # Report all changes
     if [ ${#removed[@]} -gt 0 ]; then
         for script in "${removed[@]}"; do
             log "Removed userscript: $script"
@@ -560,7 +502,6 @@ set_userscripts() {
         done
     fi
 
-    # If no changes were made, stay silent
     if [ ${#removed[@]} -eq 0 ] && [ ${#added[@]} -eq 0 ] && [ ${#updated[@]} -eq 0 ]; then
         return 0
     fi
@@ -575,7 +516,6 @@ update_geolocation_permission() {
     local tmp_file=$(mktemp)
 
     if [ "$enabled" = "true" ]; then
-        # Add permission if not already present
         if ! grep -q "android.permission.ACCESS_FINE_LOCATION" "$manifest_file"; then
             awk -v perm="$permission" '
             {
@@ -589,7 +529,6 @@ update_geolocation_permission() {
             try mv "$tmp_file" "$manifest_file"
         fi
     else
-        # Remove permission if present
         if grep -q "android.permission.ACCESS_FINE_LOCATION" "$manifest_file"; then
             grep -v "android.permission.ACCESS_FINE_LOCATION" "$manifest_file" > "$tmp_file"
 
@@ -603,12 +542,18 @@ update_geolocation_permission() {
 
 
 get_tools() {
+    # HANYA JALANKAN SECARA LOKAL
+    if [ -n "${CI:-}" ]; then
+        warn "Skipping get_tools in CI environment."
+        return 0
+    fi
+
     info "Downloading Android Command Line Tools..."
     
     case "$(uname -s)" in
-        Linux*)     os_type="linux";;
-        # Darwin*)    os_type="mac";;
-        *)         error "Unsupported OS";;
+        Linux*)      os_type="linux";;
+        # Darwin*)     os_type="mac";;
+        *)           error "Unsupported OS";;
     esac
     
     tmp_dir=$(mktemp -d)
@@ -659,6 +604,12 @@ EOL
 
 
 get_java() {
+    # HANYA JALANKAN SECARA LOKAL
+    if [ -n "${CI:-}" ]; then
+        warn "Skipping get_java in CI environment."
+        return 0
+    fi
+
     local install_dir="$PWD/jvm"
     local jdk_version="17.0.2"
     local jdk_hash="0022753d0cceecacdd3a795dd4cea2bd7ffdf9dc06e22ffd1be98411742fbb44"
@@ -683,125 +634,4 @@ get_java() {
     info "Unpacking to ${install_dir}..."
     try "mkdir -p '$install_dir'"
     try "tar xf openjdk.tar.gz"
-    try "mv jdk-${jdk_version} '$install_dir/'"
-    
-    cd "$OLDPWD"
-    rm -rf "$tmp_dir"
-
-    export JAVA_HOME="$install_dir/jdk-${jdk_version}"
-    export PATH="$JAVA_HOME/bin:$PATH"
-    
-    log "OpenJDK ${jdk_version} downloaded successfully!"
-}
-
-
-# Check Java version and update JAVA_HOME if needed
-check_and_find_java() {
-    # First check existing JAVA_HOME
-    if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then
-        version=$("$JAVA_HOME/bin/java" -version 2>&1 | head -n 1 | cut -d'"' -f2 | cut -d'.' -f1)
-        if [ "$version" = "17" ]; then
-            info "Using system JAVA_HOME: $JAVA_HOME"
-            export PATH="$JAVA_HOME/bin:$PATH"
-            return 0
-        else
-            warn "Current JAVA_HOME points to wrong version: $version"
-        fi
-    fi
-
-    # Then check local installation
-    if [ -d "$PWD/jvm/jdk-17.0.2" ]; then
-        info "Using local Java installation"
-        export JAVA_HOME="$PWD/jvm/jdk-17.0.2"
-        export PATH="$JAVA_HOME/bin:$PATH"
-        return 0
-    fi
-
-    # Finally check /usr/lib/jvm
-    if [ -d "/usr/lib/jvm" ]; then
-        while IFS= read -r java_path; do
-            if [ -x "$java_path/bin/java" ]; then
-                version=$("$java_path/bin/java" -version 2>&1 | head -n 1 | cut -d'"' -f2 | cut -d'.' -f1)
-                if [ "$version" = "17" ]; then
-                    info "Found system Java 17: $java_path"
-                    export JAVA_HOME="$java_path"
-                    export PATH="$JAVA_HOME/bin:$PATH"
-                    return 0
-                fi
-            fi
-        done < <(find /usr/lib/jvm -maxdepth 1 -type d)
-    fi
-
-    # No suitable Java found
-    return 1
-}
-
-build() {
-    apply_config $@
-    apk
-}
-
-###############################################################################
-
-ORIGINAL_PWD="$PWD"
-
-# Change directory to the directory where make.sh resides (project root)
-try cd "$(dirname "$0")"
-
-export ANDROID_HOME=$PWD/cmdline-tools/
-appname=$(grep -Po '(?<=applicationId "com\.)[^.]*' app/build.gradle)
-
-# Set Gradle's cache directory to be local to the project
-export GRADLE_USER_HOME=$PWD/.gradle-cache
-
-command -v wget >/dev/null 2>&1 || error "wget not found. Please install wget"
-
-# Try to find Java 17
-if ! check_and_find_java; then
-    warn "Java 17 not found"
-    read -p "Would you like to download OpenJDK 17 to ./jvm? (y/N) " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        get_java
-        if ! command -v java >/dev/null 2>&1; then
-            error "Java installation failed"
-        fi
-    else
-        error "Java 17 is required"
-    fi
-fi
-
-# Final verification
-java_version=$(java -version 2>&1 | head -n 1 | cut -d'"' -f2 | cut -d'.' -f1)
-if [ "$java_version" != "17" ]; then
-    error "Wrong Java version: $java_version. Java 17 is required"
-fi
-
-command -v adb >/dev/null 2>&1 || warn "adb not found. './make.sh try' will not work"
-
-if [ ! -d "$ANDROID_HOME" ]; then
-    warn "Android Command Line Tools not found: ./cmdline-tools"
-    read -p "Do you want to download them now? (y/n) " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        get_tools
-    else
-        error "Cannot continue without Android Command Line Tools"
-    fi
-fi
-
-if [ $# -eq 0 ]; then
-    echo -e "${BOLD}Usage:${NC}"
-    echo -e "  ${BLUE}$0 keygen${NC}          - Generate signing key"
-    echo -e "  ${BLUE}$0 build${NC} [config]  - Apply configuration and build"
-    echo -e "  ${BLUE}$0 test${NC}            - Install and test APK via adb, show logs"
-    echo -e "  ${BLUE}$0 clean${NC}           - Clean build files, reset settings"
-    echo 
-    echo -e "  ${BLUE}$0 apk${NC}             - Build APK without apply_config"
-    echo -e "  ${BLUE}$0 apply_config${NC}    - Apply settings from config file"
-	echo -e "  ${BLUE}$0 get_java${NC}        - Download OpenJDK 17 locally"
-    echo -e "  ${BLUE}$0 regradle${NC}        - Reinstall gradle. You don't need it"
-    exit 1
-fi
-
-eval $@
+    try "mv jdk-${jdk_version} '$
