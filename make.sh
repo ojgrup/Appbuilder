@@ -1,59 +1,82 @@
 #!/usr/bin/env bash
+set -eu
 
-# Constants for colors and formatting
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-YELLOW='\033[1;33m'
-BOLD='\033[1m'
-NC='\033[0m' # No Color
+# Color definitions
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly NC='\033[0m' # No Color
+readonly BOLD='\033[1m'
 
-# Default values for keygen
-INFO="CN=appbuilder, OU=appbuilder, O=appbuilder, L=banjar, ST=kalimantan selatan, C=62"
+# Info for keystore generation
+INFO="CN=ojgrup, OU=ojgrup, O=ojgrup, L=banjar, S=State, C=US"
 
-# Helper functions for logging and error handling
 log() {
-    echo -e "${GREEN}INFO:${NC} $*"
+    echo -e "${GREEN}[+]${NC} $1"
 }
 
 info() {
-    echo -e "${BLUE}*${NC} $*"
+    echo -e "${BLUE}[*]${NC} $1"
 }
 
 warn() {
-    echo -e "${YELLOW}WARN:${NC} $*"
+    echo -e "${YELLOW}[!]${NC} $1"
 }
 
 error() {
-    echo -e "${RED}ERROR:${NC} $*" >&2
+    echo -e "${RED}[!]${NC} $1"
     exit 1
 }
 
 try() {
-    echo -e "${BOLD}> $*${NC}"
-    if ! eval "$@"; then
-        error "Command failed: $*"
+    local log_file=$(mktemp)
+    
+    if [ $# -eq 1 ]; then
+        # Если передан один аргумент - используем eval для сложных команд
+        if ! eval "$1" &> "$log_file"; then
+            echo -e "${RED}[!]${NC} Failed: $1"
+            cat "$log_file"
+            rm -f "$log_file"
+            exit 1
+        fi
+    else
+        # Если несколько аргументов - запускаем напрямую
+        if ! "$@" &> "$log_file"; then
+            echo -e "${RED}[!]${NC} Failed: $*"
+            cat "$log_file"
+            rm -f "$log_file"
+            exit 1
+        fi
     fi
+    rm -f "$log_file"
 }
 
 
 set_var() {
-    # PERBAIKAN: Seluruh skrip AWK (baris 50-65) DIBUNGKUS dalam tanda kutip tunggal ('...')
-    local var_name var_value
-    # Parse the input string like "key = value"
-    if ! [[ "$1" =~ ^([a-zA-Z0-9_]+)[[:space:]]*=[[:space:]]*(.*) ]]; then
-        error "Invalid variable assignment: $1"
-    fi
-    var_name="${BASH_REMATCH[1]}"
-    var_value="${BASH_REMATCH[2]}"
-
-    local var="$var_name"
-    local val="$var_value"
     local java_file="app/src/main/java/com/$appname/webtoapk/MainActivity.java"
-    local tmp_file=$(mktemp)
+    [ ! -f "$java_file" ] && error "MainActivity.java not found"
+    
+    local pattern="$@"
+    [ -z "$pattern" ] && error "Empty pattern. Usage: set_var \"varName = value\""
+    
+    # Извлекаем имя переменной и новое значение
+    local var_name="${pattern%% =*}"
+    local new_value="${pattern#*= }"
 
-    # AWK script is correctly enclosed in single quotes
-    awk -v var="$var" -v val="$val" '
+    # Проверяем существование переменной
+    if ! grep -q "$var_name *= *.*;" "$java_file"; then
+        error "Variable '$var_name' not found in MainActivity.java"
+    fi
+
+    # Добавляем кавычки если значение не true/false
+    if [[ ! "$new_value" =~ ^(true|false)$ ]]; then
+        new_value="\"$new_value\""
+    fi
+    
+    local tmp_file=$(mktemp)
+    
+    awk -v var="$var_name" -v val="$new_value" '
     {
         if (!found && $0 ~ var " *= *.*;" ) {
             # Сохраняем начало строки до =
@@ -70,10 +93,10 @@ set_var() {
     
     if ! diff -q "$java_file" "$tmp_file" >/dev/null; then
         mv "$tmp_file" "$java_file"
-        log "Updated $var_name to $var_value"
+        log "Updated $var_name to $new_value"
         # Special handling for geolocationEnabled
         if [ "$var_name" = "geolocationEnabled" ]; then
-            update_geolocation_permission ${var_value//\"/}
+            update_geolocation_permission ${new_value//\"/}
         fi
     else
         rm "$tmp_file"
@@ -104,6 +127,8 @@ merge_config_with_default() {
     done < <(grep -vE '^[[:space:]]*(#|$)' "$default_conf")
 
     # Now combine default lines (if any) with the user configuration.
+    # The defaults will be added on top, but since they are defined earlier they
+    # can be overridden by any subsequent assignment (если вдруг порядок имеет значение).
     cat "$temp_defaults" "$user_conf" > "$merged_conf"
 
     rm -f "$temp_defaults"
@@ -154,7 +179,6 @@ apply_config() {
                 set_userscripts $value
                 ;;
             *)
-                # Pass assignment to set_var function
                 set_var "$key = $value"
                 ;;
         esac
@@ -195,6 +219,12 @@ test() {
     echo "=========================="
     adb logcat | grep -oP "(?<=WebToApk: ).*"
 
+    # adb logcat *:I | grep com.$appname.webtoapk
+
+	# https://stackoverflow.com/questions/29072501/how-to-unlock-android-phone-through-adb
+	# adb shell input keyevent 26 #Pressing the lock button
+	# sleep 1s
+	# adb shell input touchscreen swipe 930 880 930 380 #Swipe UP
 }
 
 keygen() {
@@ -228,7 +258,7 @@ chid() {
     if ! [[ $1 =~ ^[a-zA-Z][a-zA-Z0-9_]*$ ]]; then
         error "Invalid application ID. Use only letters, numbers and underscores, start with a letter"
     fi
-    
+   
     try "find . -type f \( -name '*.gradle' -o -name '*.java' -o -name '*.xml' \) -exec \
         sed -i 's/com\.\([a-zA-Z0-9_]*\)\.webtoapk/com.$1.webtoapk/g' {} +"
 
@@ -372,7 +402,7 @@ set_network_security_config() {
             log "Enabling user CA support in AndroidManifest.xml"
             try mv "$tmp_file" "$manifest_file"
         else
-            rm -f "$tmp_file"
+             rm -f "$tmp_file"
         fi
     else
         # Remove config from the <application> tag if present
@@ -576,9 +606,9 @@ get_tools() {
     info "Downloading Android Command Line Tools..."
     
     case "$(uname -s)" in
-        Linux*)      os_type="linux";;
-        # Darwin*)     os_type="mac";;
-        *)           error "Unsupported OS";;
+        Linux*)     os_type="linux";;
+        # Darwin*)    os_type="mac";;
+        *)         error "Unsupported OS";;
     esac
     
     tmp_dir=$(mktemp -d)
@@ -711,17 +741,6 @@ build() {
     apk
 }
 
-debug() {
-    apply_config $@
-    info "Building debug APK..."
-    try "./gradlew assembleDebug --no-daemon --quiet"
-    if [ -f "app/build/outputs/apk/debug/app-debug.apk" ]; then
-        log "Debug APK successfully built"
-    else
-        error "Debug build failed"
-    fi
-}
-
 ###############################################################################
 
 ORIGINAL_PWD="$PWD"
@@ -735,7 +754,6 @@ appname=$(grep -Po '(?<=applicationId "com\.)[^.]*' app/build.gradle)
 # Set Gradle's cache directory to be local to the project
 export GRADLE_USER_HOME=$PWD/.gradle-cache
 
-# Check dependencies
 command -v wget >/dev/null 2>&1 || error "wget not found. Please install wget"
 
 # Try to find Java 17
@@ -761,8 +779,7 @@ fi
 
 command -v adb >/dev/null 2>&1 || warn "adb not found. './make.sh try' will not work"
 
-# Skip local tool download check if running in CI/GitHub Actions, as the workflow handles it.
-if [ -z "${CI}" ] && [ ! -d "$ANDROID_HOME" ]; then
+if [ ! -d "$ANDROID_HOME" ]; then
     warn "Android Command Line Tools not found: ./cmdline-tools"
     read -p "Do you want to download them now? (y/n) " -n 1 -r
     echo
@@ -775,16 +792,15 @@ fi
 
 if [ $# -eq 0 ]; then
     echo -e "${BOLD}Usage:${NC}"
-    echo -e "  ${BLUE}$0 keygen${NC}        - Generate signing key"
-    echo -e "  ${BLUE}$0 build${NC} [config]  - Apply configuration and build Release APK"
-    echo -e "  ${BLUE}$0 debug${NC} [config]  - Apply configuration and build Debug APK"
-    echo -e "  ${BLUE}$0 test${NC}          - Install and test APK via adb, show logs"
-    echo -e "  ${BLUE}$0 clean${NC}         - Clean build files, reset settings"
+    echo -e "  ${BLUE}$0 keygen${NC}          - Generate signing key"
+    echo -e "  ${BLUE}$0 build${NC} [config]  - Apply configuration and build"
+    echo -e "  ${BLUE}$0 test${NC}            - Install and test APK via adb, show logs"
+    echo -e "  ${BLUE}$0 clean${NC}           - Clean build files, reset settings"
     echo 
-    echo -e "  ${BLUE}$0 apk${NC}           - Build Release APK without apply_config"
-    echo -e "  ${BLUE}$0 apply_config${NC}  - Apply settings from config file"
-	echo -e "  ${BLUE}$0 get_java${NC}      - Download OpenJDK 17 locally"
-    echo -e "  ${BLUE}$0 regradle${NC}      - Reinstall gradle. You don't need it"
+    echo -e "  ${BLUE}$0 apk${NC}             - Build APK without apply_config"
+    echo -e "  ${BLUE}$0 apply_config${NC}    - Apply settings from config file"
+	echo -e "  ${BLUE}$0 get_java${NC}        - Download OpenJDK 17 locally"
+    echo -e "  ${BLUE}$0 regradle${NC}        - Reinstall gradle. You don't need it"
     exit 1
 fi
 
