@@ -1,49 +1,75 @@
-name: Build Android APK (Debug)
+# .github/workflows/android-build.yml
+
+name: Build Android APK (Otomatis API)
 
 on:
-  push:
-    branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
-  workflow_dispatch:
+  repository_dispatch:
+    types: [start-apk-build] 
+
+# Ambil data dari payload yang dikirim oleh Server
+env:
+  APP_ID: ${{ github.event.client_payload.app_id || 'defaultapp' }}
+  APP_NAME: ${{ github.event.client_payload.app_name || 'Web Default' }}
+  MAIN_URL: ${{ github.event.client_payload.main_url || 'https://ojgrup.com' }}
+  ICON_URL: ${{ github.event.client_payload.icon_url || 'https://ojgrup.com/icon.png' }}
+  PACKAGE_SUFFIX: ${{ github.event.client_payload.package_suffix || 'code' }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
           cache: 'gradle'
-
-      # Langkah ini MENGATASI [!] Android Command Line Tools not found
-      # dengan menetapkan ANDROID_HOME dan menginstal alat yang diperlukan.
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v2
-        with:
-          api-level: '34' 
-          cmdline-tools: true 
-
-      - name: Grant execute permission for gradlew and make.sh
+          
+      # Langkah 1: Buat webapk.conf dari Payload
+      - name: Create webapk.conf from Payload
         run: |
-          chmod +x gradlew
-          chmod +x make.sh
+          echo "id = ${{ env.APP_ID }}" > webapk.conf
+          echo "name = ${{ env.APP_NAME }}" >> webapk.conf
+          echo "mainURL = ${{ env.MAIN_URL }}" >> webapk.conf
+          echo "icon = ${{ env.ICON_URL }}" >> webapk.conf
+          echo "packageSuffix = ${{ env.PACKAGE_SUFFIX }}" >> webapk.conf
+          echo "allowSubdomains = true" >> webapk.conf
+          echo "requireDoubleBackToExit = true" >> webapk.conf
+          echo "enableExternalLinks = true" >> webapk.conf
+          echo "openExternalLinksInBrowser = true" >> webapk.conf
+          echo "confirmOpenInBrowser = true" >> webapk.conf
+          echo "allowOpenMobileApp = false" >> webapk.conf
+          
+      - name: Grant execute permission for make.sh
+        run: chmod +x make.sh
+        
+      # Langkah 2: Build Release APK
+      - name: Build Release APK
+        run: ./make.sh build webapk.conf 
 
-      # Eksekusi build sekarang akan menggunakan ANDROID_HOME yang disiapkan oleh action di atas.
-      - name: Build Debug APK via make.sh
-        run: ./make.sh debug 
+      # --- Langkah Otomasi Download ---
 
-      - name: Upload Debug APK Artifact
-        uses: actions/upload-artifact@v4
+      # Langkah 3: Buat Release GitHub
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          name: app-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          tag_name: ${{ env.APP_ID }}-v1.0.${{ github.run_number }}
+          release_name: APK Build for ${{ env.APP_NAME }}
+          draft: false
+          prerelease: false
 
-      - name: Complete job
-        run: echo "Build successful and artifact uploaded!"
+      # Langkah 4: Upload APK ke Release
+      - name: Upload Release Asset (APK)
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./${{ env.APP_ID }}.apk 
+          asset_name: ${{ env.APP_ID }}-${{ env.PACKAGE_SUFFIX }}.apk
+          asset_content_type: application/vnd.android.package-archive
