@@ -56,7 +56,9 @@ try() {
 set_var() {
     # Gunakan $appname dan $PACKAGE_SUFFIX yang sudah diupdate oleh chid
     local java_file="app/src/main/java/com/$appname/$PACKAGE_SUFFIX/MainActivity.java"
-    [ ! -f "$java_file" ] && error "MainActivity.java not found"
+    # BARIS PERBAIKAN: set_var hanya dijalankan setelah chid selesai.
+    # Jika chid gagal, ini tidak akan dijalankan.
+    [ ! -f "$java_file" ] && error "MainActivity.java not found in the package path com.$appname.$PACKAGE_SUFFIX/"
     
     local pattern="$@"
     [ -z "$pattern" ] && error "Empty pattern. Usage: set_var \"varName = value\""
@@ -124,8 +126,13 @@ merge_config_with_default() {
     echo "$merged_conf"
 }
 
+
+# PERBAIKAN KRITIS: apply_config sekarang berjalan dalam dua loop.
+# Loop pertama mengambil ID dan Suffix, kemudian menjalankan CHID.
+# Loop kedua menjalankan set_var (dan rename, icon, dll.)
 apply_config() {
     local config_file="${1:-webapk.conf}"
+    local app_id_to_set="" # Variabel sementara untuk menyimpan App ID
 
     if [ ! -f "$config_file" ] && [ -f "$ORIGINAL_PWD/$config_file" ]; then
         config_file="$ORIGINAL_PWD/$config_file"
@@ -139,12 +146,7 @@ apply_config() {
 
     config_file=$(merge_config_with_default "$config_file")
 
-    # Ambil packageSuffix terlebih dahulu
-    local package_suffix_value=$(awk -F'=' '/^[[:space:]]*packageSuffix[[:space:]]*=/ {gsub(/[[:space:]]+/, "", $2); print $2}' "$config_file")
-    if [ -n "$package_suffix_value" ]; then
-        PACKAGE_SUFFIX="$package_suffix_value"
-    fi
-    
+    # 1. LOOP PERTAMA: Ambil packageSuffix dan id saja
     while IFS='=' read -r key value || [ -n "$key" ]; do
         [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
         
@@ -153,7 +155,31 @@ apply_config() {
         
         case "$key" in
             "id")
-                chid "$value"
+                app_id_to_set="$value"
+                ;;
+            "packageSuffix")
+                PACKAGE_SUFFIX="$value"
+                ;;
+            # Ignore other keys for now
+        esac
+    done < <(sed -e '/^[[:space:]]*#/d' -e 's/[[:space:]]\+#.*//' "$config_file")
+    
+    # PERBAIKAN KRITIS: Jalankan CHID di sini setelah packageSuffix dan id diketahui
+    # Ini memastikan struktur folder sudah benar sebelum set_var dijalankan.
+    if [ -n "$app_id_to_set" ]; then
+        chid "$app_id_to_set"
+    fi
+
+    # 2. LOOP KEDUA: Terapkan semua konfigurasi
+    while IFS='=' read -r key value || [ -n "$key" ]; do
+        [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
+        
+        key=$(echo "$key" | xargs)
+        value=$(echo "$value" | xargs)
+        
+        case "$key" in
+            "id")
+                # Sudah diproses di atas
                 ;;
             "name")
                 rename "$value"
@@ -174,6 +200,7 @@ apply_config() {
                 # Sudah diproses di atas
                 ;;
             *)
+                # Terapkan variabel ke MainActivity.java
                 set_var "$key = $value"
                 ;;
         esac
@@ -199,6 +226,7 @@ apk() {
         echo -e "Size: ${BLUE}$(du -h app/build/outputs/apk/release/app-release.apk | cut -f1)${NC}"
         echo -e "Package: ${BLUE}com.${appname}.${PACKAGE_SUFFIX}${NC}"
         echo -e "App name: ${BLUE}$(grep -o 'app_name">[^<]*' app/src/main/res/values/strings.xml | cut -d'>' -f2)${NC}"
+        # Menggunakan PACKAGE_SUFFIX baru untuk path URL
         echo -e "URL: ${BLUE}$(grep 'String mainURL' app/src/main/java/com/$appname/$PACKAGE_SUFFIX/*.java | cut -d'"' -f2)${NC}"
         echo -e "${BOLD}----------------${NC}"
     else
@@ -235,6 +263,8 @@ keygen() {
 clean() {
     info "Cleaning build files..."
     try rm -rf app/build .gradle
+    # Setel ulang ke nilai default sebelum membersihkan
+    PACKAGE_SUFFIX="webtoapk" 
     apply_config app/default.conf
     log "Clean completed"
 }
@@ -249,35 +279,36 @@ chid() {
     
     local NEW_APP_ID="$1"
     local OLD_SUFFIX="webtoapk" # Suffix yang dikodekan secara default di proyek
-    local NEW_SUFFIX="$PACKAGE_SUFFIX" # Suffix baru dari config (default-nya 'webtoapk')
+    local NEW_SUFFIX="$PACKAGE_SUFFIX" # Suffix baru dari config
     local old_package="com.$appname.$OLD_SUFFIX"
     local new_package="com.$NEW_APP_ID.$NEW_SUFFIX"
 
 
     # 1. Ganti App ID lama ke App ID baru (misal: myapp ke ojgrup)
+    # Ini harus menggunakan OLD_SUFFIX karena ini adalah status sebelum perubahan Suffix
     try "find . -type f \( -name '*.gradle' -o -name '*.java' -o -name '*.xml' \) -exec \
         sed -i 's/$old_package/com.$NEW_APP_ID.$OLD_SUFFIX/g' {} +"
 
     if [ "$NEW_APP_ID" != "$appname" ]; then
         info "Old App ID: com.$appname.$OLD_SUFFIX"
-        info "Renaming folder to: com.$NEW_APP_ID.$OLD_SUFFIX"
+        info "New App ID: com.$NEW_APP_ID.$OLD_SUFFIX"
         
         # Pindahkan folder App ID (misal: dari /com/myapp ke /com/ojgrup)
         try "mv app/src/main/java/com/$appname app/src/main/java/com/$NEW_APP_ID"
         appname="$NEW_APP_ID"
     fi
 
-    # 2. Ganti Suffix lama ke Suffix baru (misal: webtoapk ke customapp)
+    # 2. Ganti Suffix lama ke Suffix baru (misal: webtoapk ke code)
     if [ "$NEW_SUFFIX" != "$OLD_SUFFIX" ]; then
         
         info "Old Suffix: .$OLD_SUFFIX"
         info "New Suffix: .$NEW_SUFFIX"
         
-        # Pindahkan folder suffix (misal: dari /ojgrup/webtoapk ke /ojgrup/customapp)
-        # Hati-hati: Asumsi folder $OLD_SUFFIX masih ada di app/src/main/java/com/$appname/
-        try "find app/src/main/java/com/$appname -type d -name '$OLD_SUFFIX' -exec mv {} app/src/main/java/com/$NEW_APP_ID/$NEW_SUFFIX \;"
+        # Pindahkan folder suffix (misal: dari /ojgrup/webtoapk ke /ojgrup/code)
+        # PATH: app/src/main/java/com/$appname/$OLD_SUFFIX
+        try "mv app/src/main/java/com/$NEW_APP_ID/$OLD_SUFFIX app/src/main/java/com/$NEW_APP_ID/$NEW_SUFFIX"
 
-        # Perbarui semua file dengan nama paket baru (mengganti string .webtoapk menjadi .customapp)
+        # Perbarui semua file dengan nama paket baru (mengganti string .webtoapk menjadi .code)
         try "find . -type f \( -name '*.gradle' -o -name '*.java' -o -name '*.xml' \) -exec \
             sed -i 's/\.$OLD_SUFFIX/\.$NEW_SUFFIX/g' {} +"
         
@@ -587,7 +618,6 @@ EOL
 
 
 # FUNGSI UNTUK MENCARI JAVA HANYA DIGUNAKAN UNTUK MEMVERIFIKASI DI LOKAL.
-# Di CI, ini akan selalu mengandalkan JAVA_HOME yang diset oleh action.
 check_and_find_java() {
     # 1. Prioritas utama: Pastikan JAVA_HOME (dari CI atau lokal) adalah Java 17
     if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then
@@ -676,7 +706,6 @@ ORIGINAL_PWD="$PWD"
 try cd "$(dirname "$0")"
 
 # PERBAIKAN KRITIS UNTUK CI: JANGAN TIMPA ANDROID_HOME.
-# CI akan selalu mengeset ANDROID_HOME. Kita hanya perlu ini di lokal.
 if [ -z "${CI:-}" ]; then
     # Jika TIDAK di CI, periksa path lokal untuk ANDROID_HOME jika belum ada.
     if [ -d "$PWD/cmdline-tools" ]; then
@@ -685,7 +714,6 @@ if [ -z "${CI:-}" ]; then
 fi
 
 # Appname harus diambil dengan asumsi PACKAGE_SUFFIX default/lama (webtoapk)
-# Ini penting karena apply_config yang mengubah PACKAGE_SUFFIX dipanggil setelah inisialisasi ini.
 appname=$(grep -Po '(?<=applicationId "com\.)[^.]*' app/build.gradle)
 
 # Set Gradle's cache directory to be local to the project
@@ -693,7 +721,7 @@ export GRADLE_USER_HOME=$PWD/.gradle-cache
 
 command -v wget >/dev/null 2>&1 || error "wget not found. Please install wget"
 
-# Java Check (Hanya memverifikasi, tidak lagi mengunduh secara otomatis)
+# Java Check
 if ! check_and_find_java; then
     if [ -z "${CI:-}" ]; then
         warn "Java 17 not found"
@@ -712,7 +740,7 @@ if ! check_and_find_java; then
     fi
 fi
 
-# Pengecekan Tools Android dan ADB (Di CI, akan dilewati jika sudah disiapkan)
+# Pengecekan Tools Android dan ADB
 if [ -z "${CI:-}" ]; then
     if ! command -v adb >/dev/null 2>&1; then
         warn "adb not found. './make.sh test' will not work"
