@@ -11,6 +11,8 @@ readonly BOLD='\033[1m'
 
 # Info for keystore generation
 INFO="CN=ojgrup, OU=ojgrup, O=ojgrup, L=banjar, S=State, C=US"
+# Variabel global untuk package suffix. Default: webtoapk
+PACKAGE_SUFFIX="webtoapk"
 
 log() {
     echo -e "${GREEN}[+]${NC} $1"
@@ -52,7 +54,8 @@ try() {
 
 
 set_var() {
-    local java_file="app/src/main/java/com/$appname/webtoapk/MainActivity.java"
+    # Gunakan $appname dan $PACKAGE_SUFFIX yang sudah diupdate oleh chid
+    local java_file="app/src/main/java/com/$appname/$PACKAGE_SUFFIX/MainActivity.java"
     [ ! -f "$java_file" ] && error "MainActivity.java not found"
     
     local pattern="$@"
@@ -135,6 +138,12 @@ apply_config() {
     info "Using config: $config_file"
 
     config_file=$(merge_config_with_default "$config_file")
+
+    # Ambil packageSuffix terlebih dahulu
+    local package_suffix_value=$(awk -F'=' '/^[[:space:]]*packageSuffix[[:space:]]*=/ {gsub(/[[:space:]]+/, "", $2); print $2}' "$config_file")
+    if [ -n "$package_suffix_value" ]; then
+        PACKAGE_SUFFIX="$package_suffix_value"
+    fi
     
     while IFS='=' read -r key value || [ -n "$key" ]; do
         [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
@@ -161,6 +170,9 @@ apply_config() {
             "scripts")
                 set_userscripts $value
                 ;;
+            "packageSuffix")
+                # Sudah diproses di atas
+                ;;
             *)
                 set_var "$key = $value"
                 ;;
@@ -185,9 +197,9 @@ apk() {
         echo -e "${BOLD}----------------"
         echo -e "Final APK copied to: ${GREEN}$appname.apk${NC}"
         echo -e "Size: ${BLUE}$(du -h app/build/outputs/apk/release/app-release.apk | cut -f1)${NC}"
-        echo -e "Package: ${BLUE}com.${appname}.webtoapk${NC}"
+        echo -e "Package: ${BLUE}com.${appname}.${PACKAGE_SUFFIX}${NC}"
         echo -e "App name: ${BLUE}$(grep -o 'app_name">[^<]*' app/src/main/res/values/strings.xml | cut -d'>' -f2)${NC}"
-        echo -e "URL: ${BLUE}$(grep 'String mainURL' app/src/main/java/com/$appname/webtoapk/*.java | cut -d'"' -f2)${NC}"
+        echo -e "URL: ${BLUE}$(grep 'String mainURL' app/src/main/java/com/$appname/$PACKAGE_SUFFIX/*.java | cut -d'"' -f2)${NC}"
         echo -e "${BOLD}----------------${NC}"
     else
         error "Build failed"
@@ -198,7 +210,7 @@ test() {
     info "Detected app name: $appname"
     try "adb install app/build/outputs/apk/release/app-release.apk"
     try "adb logcat -c" # clean logs
-    try "adb shell am start -n com.$appname.webtoapk/.MainActivity"
+    try "adb shell am start -n com.$appname.$PACKAGE_SUFFIX/.MainActivity"
     echo "=========================="
     adb logcat | grep -oP "(?<=WebToApk: ).*"
 }
@@ -235,21 +247,44 @@ chid() {
         error "Invalid application ID. Use only letters, numbers and underscores, start with a letter"
     fi
     
-    try "find . -type f \( -name '*.gradle' -o -name '*.java' -o -name '*.xml' \) -exec \
-        sed -i 's/com\.\([a-zA-Z0-9_]*\)\.webtoapk/com.$1.webtoapk/g' {} +"
+    local NEW_APP_ID="$1"
+    local OLD_SUFFIX="webtoapk" # Suffix yang dikodekan secara default di proyek
+    local NEW_SUFFIX="$PACKAGE_SUFFIX" # Suffix baru dari config (default-nya 'webtoapk')
+    local old_package="com.$appname.$OLD_SUFFIX"
+    local new_package="com.$NEW_APP_ID.$NEW_SUFFIX"
 
-    if [ "$1" = "$appname" ]; then
-        return 0
+
+    # 1. Ganti App ID lama ke App ID baru (misal: myapp ke ojgrup)
+    try "find . -type f \( -name '*.gradle' -o -name '*.java' -o -name '*.xml' \) -exec \
+        sed -i 's/$old_package/com.$NEW_APP_ID.$OLD_SUFFIX/g' {} +"
+
+    if [ "$NEW_APP_ID" != "$appname" ]; then
+        info "Old App ID: com.$appname.$OLD_SUFFIX"
+        info "Renaming folder to: com.$NEW_APP_ID.$OLD_SUFFIX"
+        
+        # Pindahkan folder App ID (misal: dari /com/myapp ke /com/ojgrup)
+        try "mv app/src/main/java/com/$appname app/src/main/java/com/$NEW_APP_ID"
+        appname="$NEW_APP_ID"
     fi
 
-    info "Old name: com.$appname.webtoapk"
-    info "Renaming to: com.$1.webtoapk"
-    
-    try "mv app/src/main/java/com/$appname app/src/main/java/com/$1"
+    # 2. Ganti Suffix lama ke Suffix baru (misal: webtoapk ke customapp)
+    if [ "$NEW_SUFFIX" != "$OLD_SUFFIX" ]; then
+        
+        info "Old Suffix: .$OLD_SUFFIX"
+        info "New Suffix: .$NEW_SUFFIX"
+        
+        # Pindahkan folder suffix (misal: dari /ojgrup/webtoapk ke /ojgrup/customapp)
+        # Hati-hati: Asumsi folder $OLD_SUFFIX masih ada di app/src/main/java/com/$appname/
+        try "find app/src/main/java/com/$appname -type d -name '$OLD_SUFFIX' -exec mv {} app/src/main/java/com/$NEW_APP_ID/$NEW_SUFFIX \;"
 
-    appname=$1
-    
-    log "Application ID changed successfully"
+        # Perbarui semua file dengan nama paket baru (mengganti string .webtoapk menjadi .customapp)
+        try "find . -type f \( -name '*.gradle' -o -name '*.java' -o -name '*.xml' \) -exec \
+            sed -i 's/\.$OLD_SUFFIX/\.$NEW_SUFFIX/g' {} +"
+        
+        log "Application ID changed successfully to com.$NEW_APP_ID.$NEW_SUFFIX"
+    else
+        log "Application ID changed successfully to com.$NEW_APP_ID.$OLD_SUFFIX"
+    fi
 }
 
 
@@ -580,7 +615,42 @@ check_and_find_java() {
     return 1 # Java 17 tidak ditemukan atau tidak valid
 }
 
-# FUNGSI download_java DIHAPUS
+download_java() {
+    local install_dir="$PWD/jvm"
+    local jdk_version="17.0.2"
+    local jdk_hash="0022753d0cceecacdd3a795dd4cea2bd7ffdf9dc06e22ffd1be98411742fbb44"
+    local jdk_url="https://download.java.net/java/GA/jdk17.0.2/dfd4a8d0985749f896bed50d7138ee7f/8/GPL/openjdk-17.0.2_linux-x64_bin.tar.gz"
+
+    if [ -d "$install_dir/jdk-${jdk_version}" ]; then
+        info "OpenJDK ${jdk_version} already downloaded"
+        export JAVA_HOME="$install_dir/jdk-${jdk_version}"
+        export PATH="$JAVA_HOME/bin:$PATH"
+        return 0
+    fi
+
+    local tmp_dir=$(mktemp -d)
+    cd "$tmp_dir"
+    
+    info "Downloading OpenJDK ${jdk_version}..."
+    try "wget -q --show-progress '$jdk_url' -O openjdk.tar.gz"
+    
+    info "Verifying checksum..."
+    try "echo '${jdk_hash} openjdk.tar.gz' | sha256sum -c -"
+    
+    info "Unpacking to ${install_dir}..."
+    try "mkdir -p '$install_dir'"
+    try "tar xf openjdk.tar.gz"
+    try "mv jdk-${jdk_version} '$install_dir/'"
+    
+    cd "$OLDPWD"
+    rm -rf "$tmp_dir"
+
+    export JAVA_HOME="$install_dir/jdk-${jdk_version}"
+    export PATH="$JAVA_HOME/bin:$PATH"
+    
+    log "OpenJDK ${jdk_version} downloaded successfully!"
+}
+
 
 build() {
     apply_config $@
@@ -607,7 +677,6 @@ try cd "$(dirname "$0")"
 
 # PERBAIKAN KRITIS UNTUK CI: JANGAN TIMPA ANDROID_HOME.
 # CI akan selalu mengeset ANDROID_HOME. Kita hanya perlu ini di lokal.
-# Karena fungsi download tools sudah dihapus, bagian ini disederhanakan.
 if [ -z "${CI:-}" ]; then
     # Jika TIDAK di CI, periksa path lokal untuk ANDROID_HOME jika belum ada.
     if [ -d "$PWD/cmdline-tools" ]; then
@@ -615,6 +684,8 @@ if [ -z "${CI:-}" ]; then
     fi
 fi
 
+# Appname harus diambil dengan asumsi PACKAGE_SUFFIX default/lama (webtoapk)
+# Ini penting karena apply_config yang mengubah PACKAGE_SUFFIX dipanggil setelah inisialisasi ini.
 appname=$(grep -Po '(?<=applicationId "com\.)[^.]*' app/build.gradle)
 
 # Set Gradle's cache directory to be local to the project
@@ -622,20 +693,27 @@ export GRADLE_USER_HOME=$PWD/.gradle-cache
 
 command -v wget >/dev/null 2>&1 || error "wget not found. Please install wget"
 
-# Java Check (Hanya memverifikasi, tidak lagi mengunduh)
+# Java Check (Hanya memverifikasi, tidak lagi mengunduh secara otomatis)
 if ! check_and_find_java; then
-    # Jika TIDAK di CI, tampilkan pesan kesalahan penuh
     if [ -z "${CI:-}" ]; then
-        error "Java 17 is required but not found in system PATH or JAVA_HOME. Please install it manually."
+        warn "Java 17 not found"
+        read -p "Would you like to download OpenJDK 17 to ./jvm? (y/N) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            download_java
+            if ! command -v java >/dev/null 2>&1; then
+                error "Java installation failed"
+            fi
+        else
+            error "Java 17 is required"
+        fi
     else
-        # Jika di CI, ini berarti setup-java action gagal.
         error "Java 17 not found. GitHub Actions setup-java step failed."
     fi
 fi
 
 # Pengecekan Tools Android dan ADB (Di CI, akan dilewati jika sudah disiapkan)
 if [ -z "${CI:-}" ]; then
-    # Pengecekan tools untuk penggunaan lokal
     if ! command -v adb >/dev/null 2>&1; then
         warn "adb not found. './make.sh test' will not work"
     fi
@@ -654,6 +732,7 @@ if [ $# -eq 0 ]; then
     echo 
     echo -e "  ${BLUE}$0 apk${NC}           - Build Release APK without apply_config"
     echo -e "  ${BLUE}$0 apply_config${NC}  - Apply settings from config file"
+    echo -e "  ${BLUE}$0 download_java${NC} - Download OpenJDK 17 locally"
     echo -e "  ${BLUE}$0 regradle${NC}      - Reinstall gradle."
     exit 1
 fi
