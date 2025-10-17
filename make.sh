@@ -466,7 +466,7 @@ set_userscripts() {
                 is_current=true
                 break
             fi
-        end
+        done
         if ! $is_current; then
             rm -f "$scripts_dir/$script"
             removed+=("$script")
@@ -551,82 +551,36 @@ EOL
 }
 
 
-# Check Java version and update JAVA_HOME if needed
+# FUNGSI UNTUK MENCARI JAVA HANYA DIGUNAKAN UNTUK MEMVERIFIKASI DI LOKAL.
+# Di CI, ini akan selalu mengandalkan JAVA_HOME yang diset oleh action.
 check_and_find_java() {
-    # First check existing JAVA_HOME (important for CI)
+    # 1. Prioritas utama: Pastikan JAVA_HOME (dari CI atau lokal) adalah Java 17
     if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then
+        local version
         version=$("$JAVA_HOME/bin/java" -version 2>&1 | head -n 1 | cut -d'"' -f2 | cut -d'.' -f1)
         if [ "$version" = "17" ]; then
             info "Using system JAVA_HOME: $JAVA_HOME"
             export PATH="$JAVA_HOME/bin:$PATH"
             return 0
-        else
-            warn "Current JAVA_HOME points to wrong version: $version"
         fi
     fi
 
-    # Then check local installation (only for local build)
-    if [ -z "${CI:-}" ] && [ -d "$PWD/jvm/jdk-17.0.2" ]; then
-        info "Using local Java installation"
-        export JAVA_HOME="$PWD/jvm/jdk-17.0.2"
-        export PATH="$JAVA_HOME/bin:$PATH"
-        return 0
-    fi
-
-    # Finally check /usr/lib/jvm
-    if [ -d "/usr/lib/jvm" ]; then
-        while IFS= read -r java_path; do
-            if [ -x "$java_path/bin/java" ]; then
-                version=$("$java_path/bin/java" -version 2>&1 | head -n 1 | cut -d'"' -f2 | cut -d'.' -f1)
-                if [ "$version" = "17" ]; then
-                    info "Found system Java 17: $java_path"
-                    export JAVA_HOME="$java_path"
-                    export PATH="$JAVA_HOME/bin:$PATH"
-                    return 0
-                fi
+    # 2. Cek lokal/default Linux (Hanya dijalankan jika TIDAK di CI)
+    if [ -z "${CI:-}" ]; then
+        if command -v java >/dev/null 2>&1; then
+            local version
+            version=$(java -version 2>&1 | head -n 1 | cut -d'"' -f2 | cut -d'.' -f1)
+            if [ "$version" = "17" ]; then
+                info "Found Java 17 in PATH."
+                return 0
             fi
-        done < <(find /usr/lib/jvm -maxdepth 1 -type d)
+        fi
     fi
-
-    return 1
+    
+    return 1 # Java 17 tidak ditemukan atau tidak valid
 }
 
-download_java() {
-    local install_dir="$PWD/jvm"
-    local jdk_version="17.0.2"
-    local jdk_hash="0022753d0cceecacdd3a795dd4cea2bd7ffdf9dc06e22ffd1be98411742fbb44"
-    local jdk_url="https://download.java.net/java/GA/jdk17.0.2/dfd4a8d0985749f896bed50d7138ee7f/8/GPL/openjdk-17.0.2_linux-x64_bin.tar.gz"
-
-    if [ -d "$install_dir/jdk-${jdk_version}" ]; then
-        info "OpenJDK ${jdk_version} already downloaded"
-        export JAVA_HOME="$install_dir/jdk-${jdk_version}"
-        export PATH="$JAVA_HOME/bin:$PATH"
-        return 0
-    fi
-
-    local tmp_dir=$(mktemp -d)
-    cd "$tmp_dir"
-    
-    info "Downloading OpenJDK ${jdk_version}..."
-    try "wget -q --show-progress '$jdk_url' -O openjdk.tar.gz"
-    
-    info "Verifying checksum..."
-    try "echo '${jdk_hash} openjdk.tar.gz' | sha256sum -c -"
-    
-    info "Unpacking to ${install_dir}..."
-    try "mkdir -p '$install_dir'"
-    try "tar xf openjdk.tar.gz"
-    try "mv jdk-${jdk_version} '$install_dir/'"
-    
-    cd "$OLDPWD"
-    rm -rf "$tmp_dir"
-
-    export JAVA_HOME="$install_dir/jdk-${jdk_version}"
-    export PATH="$JAVA_HOME/bin:$PATH"
-    
-    log "OpenJDK ${jdk_version} downloaded successfully!"
-}
-
+# FUNGSI download_java DIHAPUS
 
 build() {
     apply_config $@
@@ -651,10 +605,14 @@ ORIGINAL_PWD="$PWD"
 # Change directory to the directory where make.sh resides (project root)
 try cd "$(dirname "$0")"
 
-# PERBAIKAN KRITIS UNTUK CI: JANGAN TIMPA ANDROID_HOME JIKA SUDAH DISIAPKAN OLEH CI
-# Gunakan ANDROID_HOME $PWD/cmdline-tools HANYA jika TIDAK didefinisikan DAN BUKAN di CI
-if [ -z "${ANDROID_HOME:-}" ] && [ -z "${CI:-}" ]; then
-    export ANDROID_HOME=$PWD/cmdline-tools/
+# PERBAIKAN KRITIS UNTUK CI: JANGAN TIMPA ANDROID_HOME.
+# CI akan selalu mengeset ANDROID_HOME. Kita hanya perlu ini di lokal.
+# Karena fungsi download tools sudah dihapus, bagian ini disederhanakan.
+if [ -z "${CI:-}" ]; then
+    # Jika TIDAK di CI, periksa path lokal untuk ANDROID_HOME jika belum ada.
+    if [ -d "$PWD/cmdline-tools" ]; then
+        export ANDROID_HOME=$PWD/cmdline-tools/
+    fi
 fi
 
 appname=$(grep -Po '(?<=applicationId "com\.)[^.]*' app/build.gradle)
@@ -664,46 +622,27 @@ export GRADLE_USER_HOME=$PWD/.gradle-cache
 
 command -v wget >/dev/null 2>&1 || error "wget not found. Please install wget"
 
-# Java Check and Install (di CI, ini akan dilewati karena JAVA_HOME sudah diset)
+# Java Check (Hanya memverifikasi, tidak lagi mengunduh)
 if ! check_and_find_java; then
-    # Jika TIDAK di CI, tanyakan apakah akan mengunduh Java
+    # Jika TIDAK di CI, tampilkan pesan kesalahan penuh
     if [ -z "${CI:-}" ]; then
-        warn "Java 17 not found"
-        read -p "Would you like to download OpenJDK 17 to ./jvm? (y/N) " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            download_java
-            if ! command -v java >/dev/null 2>&1; then
-                error "Java installation failed"
-            fi
-        else
-            error "Java 17 is required"
-        fi
+        error "Java 17 is required but not found in system PATH or JAVA_HOME. Please install it manually."
     else
-        # Jika di CI, tapi check_and_find_java gagal (mustahil jika action setup-java berhasil)
-        error "Java 17 is required but not found in CI environment."
+        # Jika di CI, ini berarti setup-java action gagal.
+        error "Java 17 not found. GitHub Actions setup-java step failed."
     fi
 fi
 
-# Final verification Java
-java_version=$(java -version 2>&1 | head -n 1 | cut -d'"' -f2 | cut -d'.' -f1)
-if [ "$java_version" != "17" ]; then
-    error "Wrong Java version: $java_version. Java 17 is required"
-fi
-
-command -v adb >/dev/null 2>&1 || warn "adb not found. './make.sh try' will not work"
-
-# Android Tools Check (di CI, ini akan dilewati karena ANDROID_HOME sudah diset oleh action)
-# Cek apakah ANDROID_HOME diset ke lokasi lokal *atau* diset sama sekali.
-if [ -z "${CI:-}" ] && [ ! -d "$ANDROID_HOME/cmdline-tools/latest" ]; then
-    # Jika ANDROID_HOME bukan $PWD/cmdline-tools, cek saja apakah sdkmanager ada di PATH
-    if ! command -v sdkmanager >/dev/null 2>&1; then
-        warn "Android Command Line Tools not found. Please set ANDROID_HOME or install locally."
-        # JANGAN lakukan instalasi otomatis karena fungsi get_tools sudah dihapus.
-        error "Cannot continue without Android Command Line Tools"
+# Pengecekan Tools Android dan ADB (Di CI, akan dilewati jika sudah disiapkan)
+if [ -z "${CI:-}" ]; then
+    # Pengecekan tools untuk penggunaan lokal
+    if ! command -v adb >/dev/null 2>&1; then
+        warn "adb not found. './make.sh test' will not work"
+    fi
+    if [ -z "${ANDROID_HOME:-}" ] && ! command -v sdkmanager >/dev/null 2>&1; then
+        error "Android Command Line Tools not found. Please set ANDROID_HOME or install sdkmanager."
     fi
 fi
-
 
 if [ $# -eq 0 ]; then
     echo -e "${BOLD}Usage:${NC}"
@@ -715,7 +654,6 @@ if [ $# -eq 0 ]; then
     echo 
     echo -e "  ${BLUE}$0 apk${NC}           - Build Release APK without apply_config"
     echo -e "  ${BLUE}$0 apply_config${NC}  - Apply settings from config file"
-	echo -e "  ${BLUE}$0 download_java${NC} - Download OpenJDK 17 locally"
     echo -e "  ${BLUE}$0 regradle${NC}      - Reinstall gradle."
     exit 1
 fi
