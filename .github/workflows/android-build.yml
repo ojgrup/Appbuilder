@@ -1,12 +1,88 @@
-# .github/workflows/android-build.yml (Hanya perbarui bagian Setup Android SDK)
+name: Build Android APK (Manual Trigger)
 
-# ... (bagian checkout, dll. sebelumnya)
+# Mengganti 'repository_dispatch' dengan 'workflow_dispatch' untuk pemicu manual
+on:
+  workflow_dispatch:
+    inputs:
+      app_id:
+        description: 'App ID (Contoh: aplikasikustom)'
+        required: true
+        default: 'app_manual_build'
+      app_name:
+        description: 'Nama Aplikasi (Contoh: Toko Web)'
+        required: true
+        default: 'Manual Web App'
+      main_url:
+        description: 'URL Website (Contoh: https://domainanda.com)'
+        required: true
+        default: 'https://example.com'
+      package_suffix:
+        description: 'Suffix Package Name (Contoh: code)'
+        required: true
+        default: 'manual'
+      # Untuk manual trigger, ikon harus diupload manual ke repo atau menggunakan URL default
+      icon_url:
+        description: 'URL Ikon PNG (Opsional, akan gunakan default jika kosong)'
+        required: false
+        default: 'https://raw.githubusercontent.com/ojgrup/nama-repo-apk/main/icons/default_icon.png'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
       - name: Set up Android SDK
-        # Menggunakan versi yang direkomendasikan untuk stabilitas
-        uses: android-actions/setup-android@v3 
+        uses: android-actions/setup-android@v3
         with:
-          api-level: 34 # Target SDK Android
+          api-level: 34 
           cmdline-tools: latest
 
-# ... (langkah-langkah berikutnya: Grant execution, Run make.sh, Build Release APK, dll.)
+      # 1. Membuat file konfigurasi dari input manual
+      - name: Create webapk.conf from Manual Input
+        run: |
+          cat << EOF > webapk.conf
+          APP_ID="${{ github.event.inputs.app_id }}"
+          APP_NAME="${{ github.event.inputs.app_name }}"
+          MAIN_URL="${{ github.event.inputs.main_url }}"
+          ICON_URL="${{ github.event.inputs.icon_url }}"
+          PACKAGE_SUFFIX="${{ github.event.inputs.package_suffix }}"
+          EOF
+          echo "webapk.conf created:"
+          cat webapk.conf
+        shell: bash
+
+      - name: Grant execution to make.sh
+        run: chmod +x make.sh
+
+      # 2. Build Release APK (Script make.sh yang sudah diperbaiki akan memproses konfigurasi)
+      - name: Build Release APK
+        run: ./make.sh release
+        shell: bash
+
+      # 3. Upload File APK ke GitHub Releases
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.event.inputs.app_id }}-${{ github.run_number }}
+          release_name: Release ${{ github.event.inputs.app_name }} (${{ github.event.inputs.app_id }}) Build ${{ github.run_number }}
+          draft: false
+          prerelease: false
+
+      - name: Get APK Path
+        id: apk_path
+        run: echo "path=app/release/app-release-unsigned.apk" >> $GITHUB_OUTPUT
+
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ${{ steps.apk_path.outputs.path }}
+          asset_name: ${{ github.event.inputs.app_id }}.apk
