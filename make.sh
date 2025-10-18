@@ -3,7 +3,7 @@
 
 # --- Konfigurasi Default ---
 # GANTI INI dengan PACKAGE NAME BAWAAN REPO ANDA. Contoh: com.ojgrup.webtoapk
-DEFAULT_PACKAGE_NAME="com.ojgrup.webtoapk" 
+DEFAULT_PACKAGE_NAME="com.myexample.webtoapk" # <-- GANTI INI (Berdasarkan log error Anda)
 DEFAULT_APP_NAME="Web App"
 DEFAULT_MAIN_URL="https://example.com"
 CONFIG_DIR=$(dirname "$0")
@@ -32,31 +32,10 @@ load_config() {
     log "New App ID: $NEW_PACKAGE_NAME"
 }
 
-# Fungsi untuk membuat file webapk.conf dari payload GitHub Actions
+# Fungsi untuk membuat file webapk.conf dari payload (Dilewati untuk manual trigger)
 create_config_from_payload() {
-    local payload_path="$1"
-    [ ! -f "$payload_path" ] && error "Payload file not found at $payload_path"
-    
-    APP_ID=$(jq -r '.client_payload.app_id' "$payload_path")
-    APP_NAME=$(jq -r '.client_payload.app_name' "$payload_path" | sed 's/"//g')
-    MAIN_URL=$(jq -r '.client_payload.main_url' "$payload_path" | sed 's/"//g')
-    ICON_URL=$(jq -r '.client_payload.icon_url' "$payload_path" | sed 's/"//g')
-    PACKAGE_SUFFIX=$(jq -r '.client_payload.package_suffix' "$payload_path" | sed 's/"//g')
-
-    [ "$APP_ID" = "null" ] && error "Payload missing app_id."
-    [ "$APP_NAME" = "null" ] && APP_NAME="$DEFAULT_APP_NAME"
-    [ "$MAIN_URL" = "null" ] && MAIN_URL="$DEFAULT_MAIN_URL"
-    [ "$PACKAGE_SUFFIX" = "null" ] && PACKAGE_SUFFIX="code"
-    
-    cat << EOF > webapk.conf
-APP_ID="$APP_ID"
-APP_NAME="$APP_NAME"
-MAIN_URL="$MAIN_URL"
-ICON_URL="$ICON_URL"
-PACKAGE_SUFFIX="$PACKAGE_SUFFIX"
-EOF
-
-    info "webapk.conf created from Payload."
+    # Fungsi ini tidak digunakan saat menggunakan workflow_dispatch
+    info "Skipping payload parsing for manual workflow_dispatch."
 }
 
 # Fungsi untuk mengganti Package Name dan merename folder
@@ -76,10 +55,10 @@ change_package() {
     sed -i "s/applicationId \"$old_package_name\"/applicationId \"$new_package_name\"/" app/build.gradle || error "Failed to change applicationId in build.gradle"
 
     # 2. Manifest, Strings, dan XML files
-    info "Updating Manifest, Strings, and XML files..."
+    info "Updating Manifest, Strings, dan XML files..."
     grep -rl "$old_package_name" app/src/main/ | xargs sed -i "s/$old_package_name/$new_package_name/g"
     
-    # 3. Mengubah Struktur Folder Java (PENTING!)
+    # 3. Mengubah Struktur Folder Java (Perbaikan untuk kegagalan exit code 1)
     local old_path=$(echo $old_package_name | tr . /)
     local new_path=$(echo $new_package_name | tr . /)
     local base_path="app/src/main/java"
@@ -88,13 +67,16 @@ change_package() {
     local new_dir="$base_path/$new_path"
     
     if [ ! -d "$old_dir" ]; then
-        error "MainActivity.java not found. Old package directory ($old_dir) does not exist. HARAP BUAT FOLDER AWAL INI DI REPO!"
+        error "FATAL: Old package directory ($old_dir) not found. HARUS DIBUAT SECARA MANUAL DI REPO."
     fi
 
     info "Renaming package folder $old_dir to $new_dir..."
     mkdir -p "$(dirname "$new_dir")"
     mv "$old_dir" "$new_dir" || error "Failed to rename package directory."
     
+    # 4. Memperbaiki package di file Java
+    find "$new_dir" -type f -name "*.java" -exec sed -i "s/package $old_package_name/package $new_package_name/g" {} \;
+
     log "Package name change completed."
 }
 
@@ -117,7 +99,7 @@ set_main_url() {
 # Fungsi untuk mengganti Ikon Aplikasi (Mendukung URL Download)
 set_icon() {
     local icon_path="$@"
-    local dest_file="app/src/main/res/mipmap/ic_launcher.png"
+    local dest_file="app/src/main/res/mipmap-xxxhdpi/ic_launcher.png" # Target ikon utama
     local temp_icon=$(mktemp)
 
     if [ -z "$icon_path" ]; then
@@ -126,36 +108,29 @@ set_icon() {
 
     if [[ "$icon_path" =~ ^https?:// ]]; then
         info "Downloading icon from URL: $icon_path"
-        if ! wget -q --timeout=10 -O "$temp_icon" "$icon_path"; then
+        # Gunakan curl karena lebih umum dari wget di runner GitHub
+        if ! curl -sL --output "$temp_icon" "$icon_path"; then
             error "Failed to download icon from URL: $icon_path"
         fi
         local source_file="$temp_icon"
     else
-        if [ -n "${CONFIG_DIR:-}" ] && [[ "$icon_path" != /* ]]; then
-            icon_path="$CONFIG_DIR/$icon_path"
-        fi
-        [ ! -f "$icon_path" ] && error "Local Icon file not found: $icon_path"
+        # Mengasumsikan icon lokal (tidak digunakan di sini, tapi untuk fleksibilitas)
         local source_file="$icon_path"
     fi
 
     file_type=$(file -b --mime-type "$source_file")
-    if [ "$file_type" != "image/png" ]; then
+    if [ "$file_type" != "image/png" ] && [ "$file_type" != "image/x-png" ]; then
         rm -f "$temp_icon"
         error "Icon must be in PNG format, got: $file_type"
     fi
 
-    mkdir -p "$(dirname "$dest_file")"
+    # Mengganti semua ukuran mipmap (tergantung template Anda, ini harusnya bekerja)
+    info "Replacing icons in all mipmap directories..."
+    for mipmap_dir in app/src/main/res/mipmap-*; do
+        mkdir -p "$mipmap_dir"
+        cp "$source_file" "$mipmap_dir/ic_launcher.png"
+    done
     
-    if [ -f "$dest_file" ] && cmp -s "$source_file" "$dest_file"; then
-        rm -f "$temp_icon"
-        return 0
-    fi
-    
-    if ! cp "$source_file" "$dest_file"; then
-        rm -f "$temp_icon"
-        error "Failed to copy icon to destination."
-    fi
-
     log "Icon updated successfully"
     rm -f "$temp_icon"
 }
@@ -166,10 +141,8 @@ build_apk() {
     local build_type="$1"
     local config_file="webapk.conf"
 
-    if [ "$GITHUB_EVENT_NAME" = "repository_dispatch" ]; then
-        create_config_from_payload "$GITHUB_EVENT_PATH"
-    fi
-
+    # Tidak perlu memanggil create_config_from_payload karena sudah dibuat oleh .yml
+    
     load_config "$config_file"
     
     log "Starting project modification..."
@@ -180,8 +153,6 @@ build_apk() {
     
     if [ -n "$ICON_URL" ]; then
         set_icon "$ICON_URL"
-    elif [ -n "$ICON_PATH" ]; then
-        set_icon "$ICON_PATH"
     fi
     
     log "Project modification finished. Starting Gradle build..."
